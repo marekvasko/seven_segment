@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reading review</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --line: #dddcd6; --accent: #2f6fdb;
+    --ok: #2e9e5b; --fixed: #d48a1a; --bad: #d64545; --todo: #c9c8c1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --panel: #212120; --text: #ecebe6; --muted: #9a9993;
+      --line: #393936; --accent: #6f9cf0;
+      --ok: #4cc27c; --fixed: #e9a43d; --bad: #f06a6a; --todo: #4a4945;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px 20px;
+           align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  label.ctl { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  select, input, button { font: inherit; color: var(--text); background: var(--bg);
+           border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+  button { cursor: pointer; }
+  #progress { margin-left: auto; color: var(--muted); }
+  #progress b { color: var(--text); }
+  .hint { color: var(--muted); font-size: 12px; width: 100%; }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px;
+        border-radius: 4px; padding: 0 4px; background: var(--bg); }
+
+  main { padding: 16px; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  #empty { color: var(--muted); }
+
+  .tile { background: var(--panel); border: 2px solid var(--todo); border-radius: 8px; padding: 8px;
+          display: flex; flex-direction: column; gap: 6px; scroll-margin-top: 110px; }
+  .tile:focus-within { outline: 3px solid var(--accent); outline-offset: 1px; }
+  .tile.s-ok { border-color: var(--ok); } .tile.s-fixed { border-color: var(--fixed); }
+  .tile.s-bad { border-color: var(--bad); }
+  .cap { display: flex; justify-content: space-between; align-items: center; gap: 6px;
+         font: 12px ui-monospace, monospace; color: var(--muted); }
+  .badge { font: 11px system-ui, sans-serif; padding: 1px 7px; border-radius: 99px; color: #fff; white-space: nowrap; }
+  .b-ok { background: var(--ok); } .b-fixed { background: var(--fixed); }
+  .b-bad { background: var(--bad); } .b-todo { background: var(--muted); }
+  .tile img { width: 100%; height: auto; display: block; image-rendering: pixelated; border-radius: 4px;
+              aspect-ratio: var(--ar); background: var(--bg); }
+  .tile form { display: flex; gap: 6px; align-items: center; }
+  .tile input { flex: 1; min-width: 0; font: 600 18px/1.2 ui-monospace, monospace; }
+  .tile button.submit { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .tile button.clear { padding: 4px 7px; color: var(--muted); }
+  .read { font: 12px ui-monospace, monospace; color: var(--muted); min-height: 1em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Reading review</h1>
+  <label class="ctl">Display <select id="display"></select></label>
+  <label class="ctl">Show
+    <select id="filter">
+      <option value="all">all</option>
+      <option value="todo">unchecked</option>
+      <option value="bad">invalid (?)</option>
+      <option value="fixed">corrected</option>
+    </select>
+  </label>
+  <div id="progress"></div>
+  <div class="hint">
+    Top image: original. Bottom image: only the segments the reader found lit.
+    The box holds the reading: <kbd>Enter</kbd> or ✓ submits it (type the correct value first if it's wrong) and
+    jumps to the next tile · <kbd>Shift</kbd>+<kbd>Enter</kbd> previous tile · <kbd>Esc</kbd> reset the box.
+    Type only the digits shown, without leading blanks.
+  </div>
+</header>
+
+<main>
+  <div id="grid"></div>
+  <p id="empty" hidden>Nothing matches this filter.</p>
+</main>
+
+<script>
+let state = null;      // {n_sessions, n_displays, sizes, items:[{session, display, predicted, label}]}
+let tiles = [];        // [{it, el}] in display order
+const $ = (id) => document.getElementById(id);
+const pad = (n, w) => String(n).padStart(w, "0");
+const key = (it) => `${it.session}-${it.display}`;
+
+function status(it) {
+  if (it.label == null) return it.predicted.includes("?") ? "bad" : "todo";
+  return it.label === it.predicted ? "ok" : "fixed";
+}
+const STATUS_TEXT = { todo: "unchecked", bad: "invalid", ok: "confirmed", fixed: "corrected" };
+
+function imgUrl(it, kind) {
+  return `/img?session=${it.session}&display=${it.display}&kind=${kind}&scale=3`;
+}
+
+function matches(it) {
+  const d = $("display").value, f = $("filter").value;
+  if (d !== "all" && it.display !== +d) return false;
+  if (f === "all") return true;
+  if (f === "bad") return it.predicted.includes("?");
+  return status(it) === f;
+}
+
+function buildGrid() {
+  const grid = $("grid");
+  grid.innerHTML = "";
+  tiles = [];
+  const items = state.items.filter(matches)
+    .sort((a, b) => a.display - b.display || a.session - b.session);
+  $("empty").hidden = items.length > 0;
+  // One display = 128 small images: load them all at once. Lazy-load only for
+  // the "all displays" view (1280 images).
+  const loading = $("display").value === "all" ? "lazy" : "eager";
+  for (const it of items) {
+    const el = document.createElement("div");
+    el.className = "tile";
+    // Reserve the image's aspect ratio so the grid doesn't jump while loading.
+    const [w, h] = state.sizes[it.display];
+    el.style.setProperty("--ar", `${w} / ${h}`);
+    el.innerHTML = `
+      <div class="cap"><span>s${pad(it.session, 3)} · d${pad(it.display, 2)}</span><span class="badge"></span></div>
+      <img loading="${loading}" alt="original" src="${imgUrl(it, "raw")}">
+      <img loading="${loading}" alt="lit segments" src="${imgUrl(it, "segments")}">
+      <form>
+        <input autocomplete="off" spellcheck="false" aria-label="correct reading">
+        <button class="submit" type="submit" title="Submit (Enter)">✓</button>
+        <button class="clear" type="button" title="Remove label">×</button>
+      </form>
+      <div class="read"></div>`;
+    const input = el.querySelector("input");
+    const index = tiles.length;
+    el.querySelector("form").onsubmit = (e) => { e.preventDefault(); submit(index, input.value); };
+    el.querySelector(".clear").onclick = () => submit(index, "", false);
+    input.onkeydown = (e) => {
+      if (e.key === "Escape") { input.value = it.predicted; input.select(); }
+      else if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); focusTile(index - 1); }
+    };
+    input.onfocus = () => { input.select(); history.replaceState(null, "", `#s${it.session}-d${it.display}`); };
+    grid.appendChild(el);
+    tiles.push({ it, el });
+    updateTile(tiles[index]);
+  }
+  renderProgress();
+}
+
+function updateTile({ it, el }) {
+  const s = status(it);
+  el.className = `tile s-${s}`;
+  const badge = el.querySelector(".badge");
+  badge.className = `badge b-${s}`;
+  badge.textContent = STATUS_TEXT[s];
+  el.querySelector("input").value = it.label ?? it.predicted;
+  el.querySelector(".clear").hidden = it.label == null;
+  el.querySelector(".read").textContent = s === "fixed" ? `reader said: ${it.predicted || "(blank)"}` : "";
+}
+
+function renderProgress() {
+  const all = state.items, checked = all.filter((it) => it.label != null);
+  const wrong = checked.filter((it) => it.label !== it.predicted).length;
+  const acc = checked.length ? (100 * (checked.length - wrong) / checked.length).toFixed(1) + " %" : "–";
+  $("progress").innerHTML =
+    `checked <b>${checked.length}</b> / ${all.length} · corrected <b>${wrong}</b> · reader accuracy on checked <b>${acc}</b>`;
+}
+
+function focusTile(i) {
+  const t = tiles[i];
+  if (!t) return;
+  t.el.querySelector("input").focus({ preventScroll: true });
+  t.el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+async function submit(index, value, advance = true) {
+  const t = tiles[index];
+  const label = value.trim();
+  const res = await fetch("/api/label", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session: t.it.session, display: t.it.display, label }),
+  });
+  if (!res.ok) { alert("Saving failed: " + (await res.text())); return; }
+  t.it.label = label === "" ? null : label;
+  // Update in place; the tile stays visible even if it no longer matches the filter.
+  updateTile(t);
+  renderProgress();
+  if (advance) focusTile(index + 1);
+}
+
+$("display").onchange = () => { buildGrid(); focusTile(0); };
+$("filter").onchange = () => { buildGrid(); focusTile(0); };
+
+(async () => {
+  // The server embeds the state in the page; fall back to the API if not.
+  state = /*__STATE__*/null ?? await (await fetch("/api/state")).json();
+  const sel = $("display");
+  sel.add(new Option("all", "all"));
+  for (let i = 0; i < state.n_displays; i++) sel.add(new Option(pad(i, 2), String(i)));
+  // URL hash: #s11-d1 opens display 1 and focuses session 11; default display 00.
+  const m = location.hash.match(/^#s(\d+)-d(\d+)$/);
+  sel.value = m ? m[2] : "0";
+  buildGrid();
+  const i = m ? tiles.findIndex((t) => t.it.session === +m[1]) : 0;
+  focusTile(Math.max(0, i));
+})();
+</script>
+</body>
+</html>
