@@ -4,7 +4,7 @@ Guidance for AI coding agents (and humans) working in this repository.
 
 ## Project
 
-Bachelor's thesis project on recognising readings from **7-segment displays**.
+Project on recognising readings from **7-segment displays**.
 
 - `src/seven_segment/` – Python package (src layout).
 - `tests/` – pytest tests, mirroring module names (`test_<module>.py`).
